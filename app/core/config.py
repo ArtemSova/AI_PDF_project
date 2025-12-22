@@ -79,6 +79,9 @@ class Settings(BaseSettings):
     MISTRAL_BASE_URL: str
     MISTRAL_MODEL: str
 
+    # Оркестрация LLM
+    USE_LANGGRAPH_FALLBACK: bool = True
+
     @property
     def DATABASE_URL(self) -> str:
         """

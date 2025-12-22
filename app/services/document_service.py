@@ -18,6 +18,11 @@
     - Автоматическая проверка прав доступа к документам
     - Поддержка пагинации для методов, возвращающих списки
     - Изоляция бизнес-логики от слоя API и работы с файлами
+
+Примечание:
+    Проверки ролей пользователей должны выполняться на уровне API-эндпоинтов,
+    а не внутри методов сервиса. Этот сервис предполагает, что вызывающий код
+    уже выполнил необходимые проверки авторизации.
 """
 
 from typing import List
@@ -26,11 +31,13 @@ from sqlalchemy import select
 from fastapi import HTTPException, status, UploadFile
 from sqlalchemy.orm import selectinload
 
+from app.core.config import settings
 from app.models.document import Document
 from app.models.user import User
 from app.schemas.document import DocumentUpdate
 from app.services.pdf_llm_analyzer import PDFLLMAnalyzer, PDFMistralAnalyzer
 from app.services.document_processor import DocumentProcessor
+from app.services.langgraph_fallback_analyzer import LangGraphPDFAnalyzer
 
 
 class DocumentService:
@@ -45,6 +52,11 @@ class DocumentService:
         - Инкапсулирует всю бизнес-логику, связанную с документами
         - Гарантирует целостность данных и проверку прав доступа
         - Разделяет ответственность между обработкой файлов и работой с БД
+
+    Примечание:
+        Все методы предполагают, что проверка авторизации и ролей пользователя
+        уже выполнена на уровне вызывающего кода (обычно в API-эндпоинтах).
+        Методы только проверяют права доступа к конкретным документам.
     """
 
     @staticmethod
@@ -73,9 +85,6 @@ class DocumentService:
             HTTPException 400: Если файл не PDF или анализ не удался.
             HTTPException 500: Если ошибка при сохранении файла или работе с LLM.
 
-        Требования к пользователю:
-            Только пользователи с ролью 'manager' или 'admin' могут вызывать этот метод.
-
         Конфигурация:
             Требует настройки OLLAMA_BASE_URL и OLLAMA_MODEL в .env файле.
         """
@@ -83,6 +92,7 @@ class DocumentService:
         analyzer = PDFLLMAnalyzer()
         processor = DocumentProcessor(analyzer)
         return await processor.process_document(file, current_user, db)
+
 
     @staticmethod
     async def upload_and_process_document_with_mistral_api(
@@ -110,14 +120,54 @@ class DocumentService:
             HTTPException 400: Если файл не PDF или анализ не удался.
             HTTPException 500: Если ошибка при сохранении файла или работе с Mistral API.
 
-        Требования к пользователю:
-            Только пользователи с ролью 'manager' или 'admin' могут вызывать этот метод.
-
         Конфигурация:
-            Требует настройки MISTRAL_API_KEY, MISTRAL_BASE_URL и MISTRAL_MODEL в .env файле.
+            Требует настройки MISTRAL_API_KEY и MISTRAL_MODEL (опционально, по умолчанию "mistral-large-latest") в .env файле.
         """
 
         analyzer = PDFMistralAnalyzer()
+        processor = DocumentProcessor(analyzer)
+        return await processor.process_document(file, current_user, db)
+
+
+    @staticmethod
+    async def upload_and_process_document_fallback(
+        file: UploadFile,
+        current_user: User,
+        db: AsyncSession,
+    ) -> Document:
+        """
+        Загрузка PDF документа с fallback-логикой через LangGraph.
+
+        Процесс:
+            1. Проверка настройки USE_LANGGRAPH_FALLBACK
+            2. Если True: создание LangGraphPDFAnalyzer (Ollama → Mistral fallback)
+            3. Если False: создание PDFLLMAnalyzer (только Ollama)
+            4. Создание DocumentProcessor для координации процесса обработки
+            5. Запуск полного цикла обработки документа
+
+        Аргументы:
+            file (UploadFile): PDF файл для загрузки. Должен иметь MIME-тип application/pdf.
+            current_user (User): Аутентифицированный пользователь, загружающий документ.
+            db (AsyncSession): Асинхронная сессия базы данных.
+
+        Возвращает:
+            Document: Созданный документ с извлеченными AI данными.
+
+        Исключения:
+            HTTPException 400: Если файл не PDF или анализ не удался.
+            HTTPException 500: Если ошибка при сохранении файла или работе с AI моделями.
+
+        Конфигурация:
+            - USE_LANGGRAPH_FALLBACK: Включение/отключение fallback-логики
+            - При USE_LANGGRAPH_FALLBACK=True требуются настройки для Ollama и Mistral
+            - При USE_LANGGRAPH_FALLBACK=False требуются только настройки для Ollama
+        """
+
+        if settings.USE_LANGGRAPH_FALLBACK:
+            analyzer = LangGraphPDFAnalyzer()
+        else:
+            analyzer = PDFLLMAnalyzer()      # только Ollama, без fallback
+
         processor = DocumentProcessor(analyzer)
         return await processor.process_document(file, current_user, db)
 

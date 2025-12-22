@@ -12,6 +12,7 @@
 Эндпоинты:
     POST /documents/upload_local: Загрузка PDF с локальной LLM обработкой
     POST /documents/upload_mistral_online: Загрузка PDF через Mistral API
+    POST /documents/upload_fallback: Загрузка PDF с автоматическим fallback-переключением (Ollama → Mistral)
     GET /documents/my_documents: Получение списка документов текущего пользователя
     GET /documents/show_{document_id}: Получение деталей конкретного документа
     GET /documents/update_{document_id}/edit: Получение данных документа для редактирования
@@ -37,7 +38,7 @@ from typing import List
 from app.api.deps import get_current_user, get_current_supervisor
 from app.db.session import get_db
 from app.models.user import User
-from app.schemas.document import Document, DocumentShort, DocumentSupervisorView
+from app.schemas.document import Document, DocumentShort, DocumentSupervisorView, DocumentUpdate
 from app.services.document_service import DocumentService
 
 
@@ -75,8 +76,8 @@ async def upload_document(
         Document: Созданный документ с заполненными полями
 
     Ошибки:
+        400: Неверный формат файла или ошибка анализа документа
         403: Пользователь не имеет роли manager или admin
-        400: Файл не является PDF или поврежден
         500: Ошибка при обработке файла или анализе через LLM
 
     Примечание:
@@ -124,8 +125,8 @@ async def upload_document_with_mistral_api(
         Document: Созданный документ с заполненными полями
 
     Ошибки:
+        400: Неверный формат файла или ошибка анализа документа
         403: Пользователь не имеет роли manager или admin
-        400: Файл не является PDF или поврежден
         500: Ошибка при обработке файла или работе с Mistral API
 
     Примечание:
@@ -142,6 +143,76 @@ async def upload_document_with_mistral_api(
 
     return await DocumentService.upload_and_process_document_with_mistral_api(file, current_user, db)
 
+
+@router.post("/upload_fallback", response_model=Document)
+async def upload_document_fallback(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Загрузка PDF документа с автоматическим fallback-переключением между AI моделями.
+
+    Этот эндпоинт использует LangGraph для реализации стратегии автоматического переключения
+    между локальной моделью Ollama и облачной моделью Mistral AI в случае сбоев.
+
+    Процесс обработки:
+        1. Проверка прав доступа (только менеджеры и администраторы)
+        2. Валидация типа файла (должен быть PDF)
+        3. Если USE_LANGGRAPH_FALLBACK=True в настройках:
+           - Попытка анализа через локальную модель Ollama
+           - В случае ошибки - автоматический переход к Mistral API
+        4. Если USE_LANGGRAPH_FALLBACK=False:
+           - Используется только локальная модель Ollama
+
+    Аргументы запроса:
+        file (UploadFile, обязательный): PDF файл для обработки.
+            Максимальный размер файла ограничен конфигурацией сервера.
+            Поддерживаемый MIME-тип: application/pdf.
+
+    Параметры авторизации:
+        Требуется Bearer токен в заголовке Authorization.
+
+    Требования к ролям пользователя:
+        - manager: Менеджер (может загружать документы)
+        - admin: Администратор (может загружать документы)
+
+    Возвращает:
+        Document: Созданный документ с заполненными полями
+
+    Ошибки:
+        400: Неверный формат файла или ошибка анализа документа
+        401: Неавторизованный доступ (отсутствует или неверный токен)
+        403: Пользователь не имеет роли manager или admin
+        422: Ошибка валидации входных данных
+
+    Конфигурационные зависимости:
+        - OLLAMA_BASE_URL: URL сервера Ollama
+        - OLLAMA_MODEL: Название модели Ollama
+        - MISTRAL_API_KEY: API ключ для Mistral AI
+        - MISTRAL_MODEL: Название модели Mistral (опционально)
+        - USE_LANGGRAPH_FALLBACK: Флаг включения fallback-логики
+
+    Примечания:
+        При отключенном USE_LANGGRAPH_FALLBACK используется только Ollama
+        Fallback срабатывает только при ошибках подключения к Ollama
+        Для обработки используется только первый 4000 символов текста PDF
+    """
+
+    user_roles = [
+        user_role.role.name
+        for user_role in current_user.user_roles
+        if user_role.is_active
+    ]
+    if "manager" not in user_roles and "admin" not in user_roles:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Только менеджеры могут загружать документы",
+        )
+
+    return await DocumentService.upload_and_process_document_fallback(
+        file, current_user, db
+    )
 
 
 @router.get("/my_documents", response_model=List[DocumentShort])
@@ -211,8 +282,6 @@ async def get_document(
     """
 
     return await DocumentService.get_document_by_id(document_id, current_user.id, db)
-
-from app.schemas.document import Document, DocumentShort, DocumentUpdate
 
 
 @router.get("/update_{document_id}/edit", response_model=DocumentUpdate)

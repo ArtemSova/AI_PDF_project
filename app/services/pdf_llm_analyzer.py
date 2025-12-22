@@ -15,6 +15,7 @@ PDFAnalyzerBase и используют разные AI модели для из
     - Асинхронная архитектура с сохранением отзывчивости event-loop
     - Автоматическая обработка различных форматов ответов от разных моделей
     - Централизованная обработка ошибок и логирование
+    - Конвертация типов данных (строки → datetime, числа → Decimal) в базовом классе
 
 Основные компоненты:
     PDFLLMAnalyzer: Анализатор для локальных моделей Ollama
@@ -29,12 +30,14 @@ PDFAnalyzerBase и используют разные AI модели для из
     langchain_mistralai: Клиент для облачного API Mistral AI
     app.core.config: Настройки приложения (API ключи, URL моделей)
     app.services.pdf_analyzer_base: Базовый класс анализатора
-    app.utils.exceptions: Пользовательские исключения
+    app.utils.exceptions: Пользовательские исключения (LLMServiceError)
 
 Примечания:
     - PDFLLMAnalyzer использует синхронный клиент Ollama, поэтому вызовы оборачиваются в asyncio.to_thread
     - PDFMistralAnalyzer использует нативный асинхронный клиент Mistral
     - Оба анализатора возвращают данные в одинаковом формате благодаря общему базовому классу
+    - Все исключения от AI моделей оборачиваются в LLMServiceError
+    - DocumentAnalysisError и DocumentParsingError могут быть выброшены при парсинге ответа
 """
 
 import logging
@@ -47,7 +50,7 @@ from langchain_mistralai import ChatMistralAI
 
 from app.core.config import settings
 from app.services.pdf_analyzer_base import PDFAnalyzerBase
-from app.utils.exceptions import DocumentAnalysisError
+from app.utils.exceptions import LLMServiceError
 
 
 logger = logging.getLogger(__name__)
@@ -67,6 +70,7 @@ class PDFLLMAnalyzer(PDFAnalyzerBase):
         - Работает через синхронный интерфейс LangChain (OllamaLLM.invoke)
         - Автоматическое обертывание в отдельный поток для асинхронности
         - Конфигурация через настройки приложения (OLLAMA_MODEL, OLLAMA_BASE_URL)
+        - Все ошибки взаимодействия с моделью оборачиваются в LLMServiceError
 
     Атрибуты:
         _llm (OllamaLLM): Экземпляр синхронного клиента для работы с Ollama.
@@ -75,7 +79,7 @@ class PDFLLMAnalyzer(PDFAnalyzerBase):
     Примечания:
         - Требует запущенного сервера Ollama по адресу из settings.OLLAMA_BASE_URL
         - Низкая температура (0.1) обеспечивает детерминированные и точные ответы
-        - Все сетевые ошибки логируются и преобразуются в DocumentAnalysisError
+        - При ошибках создания клиента могут быть выброшены стандартные исключения Python
     """
 
     def __init__(self) -> None:
@@ -88,8 +92,8 @@ class PDFLLMAnalyzer(PDFAnalyzerBase):
             - temperature: 0.1 для детерминированных ответов
 
         Исключения:
-            RuntimeError: Если сервер Ollama недоступен при создании клиента
-            ConnectionError: Если не удается подключиться к серверу Ollama
+            Exception: Могут возникнуть стандартные исключения Python при создании клиента
+                (например, если сервер Ollama недоступен или параметры невалидны)
         """
 
         self._llm = OllamaLLM(
@@ -115,24 +119,24 @@ class PDFLLMAnalyzer(PDFAnalyzerBase):
         Возвращает:
             Dict[str, Any]: Словарь с извлеченными полями документа:
                 - document_number (str, optional): Номер документа
-                - document_date (datetime, optional): Дата документа
+                - document_date (datetime, optional): Дата документа как объект datetime
                 - sender (str, optional): Отправитель
                 - purpose (str, optional): Назначение платежа
-                - amount (Decimal, optional): Сумма
+                - amount (Decimal, optional): Сумма как Decimal
 
         Исключения:
-            DocumentAnalysisError: Если не удается проанализировать документ
-                (сетевая ошибка, ошибка сервера, ошибка модели)
-            RuntimeError: Если не удается запустить поток для вызова модели
+            LLMServiceError: Если не удается связаться с Ollama или возникла ошибка модели
+            DocumentAnalysisError: Если не удается распознать структуру документа (из _parse_response)
+            DocumentParsingError: Если документ не содержит полезной информации (из _parse_response)
 
         Логирование:
-            ERROR: При любых ошибках взаимодействия с Ollama
-                с детальной информацией об исключении (exc_info=True)
+            WARNING: При ошибках взаимодействия с Ollama (с exc_info=False)
 
         Примечания:
             - Использует asyncio.to_thread для предотвращения блокировки event-loop
-            - Оборачивает ЛЮБОЕ исключение от Ollama в DocumentAnalysisError
+            - Оборачивает исключения от Ollama в LLMServiceError
             - Полагается на _parse_response для обработки JSON и конвертации типов
+            - Возвращаемые типы конвертируются в datetime и Decimal в базовом классе
         """
 
         prompt = self._create_prompt(text_content)
@@ -140,8 +144,8 @@ class PDFLLMAnalyzer(PDFAnalyzerBase):
         try:
             raw_answer = await asyncio.to_thread(self._llm.invoke, prompt)
         except Exception as exc:
-            logger.error("Ollama запрос завершился ошибкой: %s", exc, exc_info=True)
-            raise DocumentAnalysisError("Не удалось проанализировать документ (Ollama)") from exc
+            logger.warning("Ollama запрос завершился ошибкой (fallback): %s", exc, exc_info=False)
+            raise LLMServiceError("Не удалось связаться с Ollama") from exc
 
         return self._parse_response(raw_answer)
 
@@ -160,18 +164,11 @@ class PDFMistralAnalyzer(PDFAnalyzerBase):
         - Нативная асинхронность без необходимости обертки в потоки
         - Автоматическая обработка объектов AIMessage из LangChain
         - Конфигурация через настройки приложения (MISTRAL_API_KEY, MISTRAL_MODEL)
+        - Все ошибки взаимодействия с API оборачиваются в LLMServiceError
 
     Атрибуты:
         _llm (ChatMistralAI): Экземпляр асинхронного клиента для работы с Mistral AI.
             Инициализируется в конструкторе с API ключом и параметрами модели.
-
-    Пример использования:
-        analyzer = PDFMistralAnalyzer()
-        try:
-            result = await analyzer.analyze_document(pdf_text)
-            print(f"Отправитель: {result.get('sender')}")
-        except DocumentAnalysisError as e:
-            print(f"Ошибка Mistral API: {e}")
 
     Примечания:
         - Требует валидного API ключа в settings.MISTRAL_API_KEY
@@ -192,7 +189,7 @@ class PDFMistralAnalyzer(PDFAnalyzerBase):
 
         Исключения:
             RuntimeError: Если MISTRAL_API_KEY не определен в настройках
-            ValueError: Если передан невалидный API ключ или параметры модели
+            Exception: Другие исключения при создании клиента (невалидные параметры и т.д.)
         """
 
         if not settings.MISTRAL_API_KEY:
@@ -212,8 +209,9 @@ class PDFMistralAnalyzer(PDFAnalyzerBase):
             1. Создает промпт с помощью _create_prompt (унаследован от базового класса)
             2. Вызывает асинхронный метод ChatMistralAI.ainvoke
             3. Извлекает содержимое из объекта AIMessage (result.content)
-            4. Обрабатывает возможные исключения (сеть, аутентификация, API лимиты)
-            5. Передает очищенный текст в _parse_response для стандартизированной обработки
+            4. Гарантирует, что response_text является строкой
+            5. Обрабатывает возможные исключения (сеть, аутентификация, API лимиты)
+            6. Передает очищенный текст в _parse_response для стандартизированной обработки
 
         Аргументы:
             text_content (str): Текст, извлеченный из PDF документа.
@@ -222,34 +220,35 @@ class PDFMistralAnalyzer(PDFAnalyzerBase):
         Возвращает:
             Dict[str, Any]: Словарь с извлеченными полями документа:
                 - document_number (str, optional): Номер документа
-                - document_date (datetime, optional): Дата документа
+                - document_date (datetime, optional): Дата документа как объект datetime
                 - sender (str, optional): Отправитель
                 - purpose (str, optional): Назначение платежа
-                - amount (Decimal, optional): Сумма
+                - amount (Decimal, optional): Сумма как Decimal
 
         Исключения:
-            DocumentAnalysisError: Если Mistral API возвращает ошибку
+            LLMServiceError: Если Mistral API возвращает ошибку
                 (аутентификация, сеть, квоты, невалидный запрос)
-            RuntimeError: Если ответ имеет неожиданный формат
+            DocumentAnalysisError: Если не удается распознать структуру документа (из _parse_response)
+            DocumentParsingError: Если документ не содержит полезной информации (из _parse_response)
 
         Логирование:
-            ERROR: При любых ошибках взаимодействия с Mistral API
-                с детальной информацией об исключении (exc_info=True)
+            WARNING: При любых ошибках взаимодействия с Mistral API (с exc_info=False)
 
         Примечания:
             - Использует нативный асинхронный вызов (ainvoke)
             - Обрабатывает объекты AIMessage, извлекая text/string содержимое
             - Гарантирует строковый тип ответа перед передачей в парсер
-            - Оборачивает ЛЮБОЕ исключение от Mistral API в DocumentAnalysisError
+            - Оборачивает исключения от Mistral API в LLMServiceError
+            - Возвращаемые типы конвертируются в datetime и Decimal в базовом классе
         """
 
         prompt = self._create_prompt(text_content)
 
         try:
             result = await self._llm.ainvoke(prompt)
-        except Exception as exc:  # Любая ошибка сети / аутентификации и т.п.
-            logger.error("Mistral LLM error: %s", exc, exc_info=True)
-            raise DocumentAnalysisError("Ошибка Mistral API") from exc
+        except Exception as exc:
+            logger.warning("Mistral LLM запрос завершился ошибкой (fallback): %s", exc, exc_info=False)
+            raise LLMServiceError("Не удалось связаться с Mistral") from exc
 
         if isinstance(result, AIMessage):
             response_text = result.content
