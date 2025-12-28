@@ -27,7 +27,7 @@
 
 from pathlib import Path
 from pydantic import Field, model_validator
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -67,20 +67,21 @@ class Settings(BaseSettings):
     # Путь сохранения файлов
     UPLOAD_ROOT: Path = Field(
         default_factory=lambda: Path(__file__).resolve().parents[2] / "uploads",
-        env="UPLOAD_ROOT",
+        json_schema_extra={"env": "UPLOAD_ROOT"},   # `env`‑переменная теперь задаётся через json_schema_extra
     )
 
     # Ollama
     OLLAMA_BASE_URL: str
     OLLAMA_MODEL: str
 
-    #Mistral
+    # Mistral
     MISTRAL_API_KEY: str
     MISTRAL_BASE_URL: str
     MISTRAL_MODEL: str
 
     # Оркестрация LLM
     USE_LANGGRAPH_FALLBACK: bool = True
+
 
     @property
     def DATABASE_URL(self) -> str:
@@ -93,11 +94,14 @@ class Settings(BaseSettings):
             str: Полная строка подключения к базе данных
         """
 
-        return f"postgresql+asyncpg://{self.DB_USER}:{self.DB_PASSWORD}@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
+        return (
+            f"postgresql+asyncpg://{self.DB_USER}:{self.DB_PASSWORD}"
+            f"@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
+        )
 
 
     @model_validator(mode="after")
-    def _ensure_upload_dir(cls, values):
+    def _ensure_upload_dir(self) -> "Settings":  # Pydantic v2 требует self
         """
         Валидатор, который гарантирует существование директории для загрузок.
 
@@ -113,30 +117,26 @@ class Settings(BaseSettings):
             Вызывается автоматически Pydantic после загрузки всех полей.
         """
 
-        upload_dir: Path = values.UPLOAD_ROOT
+        upload_dir: Path = self.UPLOAD_ROOT
 
-        # Если указан относительный путь – делаем его абсолютным.
+        # Если в переменной указан относительный путь – делаем его абсолютным.
         if not upload_dir.is_absolute():
             project_root = Path(__file__).resolve().parents[2]   # <корень проекта>
             upload_dir = project_root / upload_dir
-            values.UPLOAD_ROOT = upload_dir
+            # Перезаписываем атрибут, чтобы дальше код использовал уже‑абсолютный путь.
+            self.UPLOAD_ROOT = upload_dir
 
-        # Физически создаём каталог, если он ещё не существует.
+        # Физически создаём каталог, если его ещё нет.
         upload_dir.mkdir(parents=True, exist_ok=True)
 
-        return values
+        # При использовании @model_validator(mode="after") обязаны вернуть self.
+        return self
 
 
-    class Config:
-        """
-        Конфигурация Pydantic для загрузки настроек.
-
-        Атрибуты:
-            env_file (str): Имя файла с переменными окружения (по умолчанию .env)
-            env_file_encoding (str): Кодировка файла .env (по умолчанию utf-8)
-        """
-
-        env_file = ".env"          # .env будет подхватываться автоматически
-        env_file_encoding = "utf-8"
+    # Конфигурация для BaseSettings (чтение .env)
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+    )
 
 settings = Settings()

@@ -21,7 +21,7 @@
     .config: Настройки приложения (JWT_SECRET, ALGORITHM)
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from passlib.context import CryptContext
 from typing import Optional
 from jose import JWTError, jwt
@@ -102,9 +102,9 @@ def create_registration_token(data: dict, expires_delta: Optional[timedelta] = N
         to_encode["sub"] = str(to_encode["sub"])
 
     if expires_delta:
-        expire = datetime.utcnow() + expires_delta
+        expire = datetime.now(timezone.utc) + expires_delta
     else:
-        expire = datetime.utcnow() + timedelta(hours=2)
+        expire = datetime.now(timezone.utc) + timedelta(hours=2)
 
     to_encode.update({
         "exp": expire,
@@ -151,9 +151,9 @@ def create_auth_token(data: dict, expires_delta: Optional[timedelta] = None):
         to_encode["sub"] = str(to_encode["sub"])
 
     if expires_delta:
-        expire = datetime.utcnow() + expires_delta
+        expire = datetime.now(timezone.utc) + expires_delta
     else:
-        expire = datetime.utcnow() + timedelta(days=30)
+        expire = datetime.now(timezone.utc) + timedelta(days=30)
 
     to_encode.update({
         "exp": expire,
@@ -236,10 +236,10 @@ def create_password_reset_token(data: dict, expires_delta: Optional[timedelta] =
         to_encode["sub"] = str(to_encode["sub"])
 
     if expires_delta:
-        expire = datetime.utcnow() + expires_delta
+        expire = datetime.now(timezone.utc) + expires_delta
     else:
         # 30 минут по‑умолчанию
-        expire = datetime.utcnow() + timedelta(minutes=30)
+        expire = datetime.now(timezone.utc) + timedelta(minutes=30)
 
     to_encode.update({
         "exp": expire,

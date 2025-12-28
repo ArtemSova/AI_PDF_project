@@ -6,6 +6,7 @@
 от BaseModel Pydantic и включают валидацию полей, таких как email и пароли.
 
 Основные схемы:
+    Gender: Перечисление для пола пользователя
     UserCreate: Для регистрации нового пользователя
     UserLogin: Для входа в систему
     UserResponse: Для ответа с данными пользователя
@@ -19,24 +20,24 @@
 проверку совпадения паролей через валидаторы.
 
 Зависимости:
-    pydantic: BaseModel, EmailStr, Field, validator
-    typing: Optional для опциональных полей
+    pydantic: BaseModel, EmailStr, Field, field_validator, ConfigDict
     enum: Enum для перечислений
 """
 
-from pydantic import BaseModel, EmailStr, Field, validator
 from enum import Enum
+from pydantic import BaseModel, EmailStr, Field, field_validator, ConfigDict
+from pydantic_core.core_schema import ValidationInfo
 
 
 class Gender(str, Enum):
     """
-    Перечисление для пола пользователя.
+    Перечисление для представления пола пользователя.
 
-    Значения:
-        male (str): "male" - мужской пол
-        female (str): "female" - женский пол
+    Используется для валидации поля gender в схемах пользователей.
 
-    Используется в полях gender схем пользователей для ограничения допустимых значений.
+    Values:
+        male: Мужской пол
+        female: Женский пол
     """
 
     male = "male"
@@ -47,37 +48,30 @@ class UserCreate(BaseModel):
     """
     Схема для регистрации нового пользователя.
 
-    Используется в эндпоинте POST /auth/register для валидации данных регистрации.
-    Включает обязательные поля email и пароли, а также опциональные персональные данные.
+    Включает валидацию паролей на минимальную длину и совпадение.
 
-    Поля:
-        email (EmailStr): Email адрес пользователя.
-            Валидируется на соответствие формату email.
+    Attributes:
+        email: Email пользователя с автоматической валидацией формата.
+        password: Пароль длиной не менее 6 символов.
+        password_confirm: Подтверждение пароля.
+        first_name: Имя пользователя.
+        last_name: Фамилия пользователя.
+        gender: Пол пользователя, должен быть 'male' или 'female'.
 
-        password (str): Пароль пользователя.
-            Минимальная длина: 6 символов.
+    Raises:
+        ValueError: Если password и password_confirm не совпадают.
 
-        password_confirm (str): Подтверждение пароля.
-            Минимальная длина: 6 символов.
-            Должно совпадать с полем password.
-
-        first_name (str): Имя пользователя.
-            Обязательное поле.
-
-        last_name (str): Фамилия пользователя.
-            Обязательное поле.
-
-        gender (Gender): Пол пользователя.
-            Обязательное поле.
-
-    Валидация:
-        - Email валидируется автоматически через EmailStr
-        - Пароли проверяются на минимальную длину через Field(min_length=6)
-        - Совпадение паролей проверяется на уровне бизнес-логики в UserService
-
-    Примечание:
-        Поля first_name, last_name, gender помечены как "Заглушки" в комментарии,
-        что означает их опциональность на этапе регистрации.
+    Example:
+        ```json
+        {
+            "email": "user@example.com",
+            "password": "securepass123",
+            "password_confirm": "securepass123",
+            "first_name": "Иван",
+            "last_name": "Иванов",
+            "gender": "male"
+        }
+        ```
     """
 
     email: EmailStr
@@ -87,28 +81,34 @@ class UserCreate(BaseModel):
     last_name: str
     gender: str
 
+    @field_validator("password_confirm")
+    @classmethod
+    def passwords_match(cls, v: str, info: ValidationInfo) -> str:
+        """
+        Проверяет совпадение пароля и его подтверждения.
+
+        Args:
+            v: Значение поля password_confirm.
+            info: Контекст валидации с уже провалидированными данными.
+
+        Returns:
+            str: Значение password_confirm, если проверка пройдена.
+
+        Raises:
+            ValueError: Если пароли не совпадают.
+        """
+        if "password" in info.data and v != info.data["password"]:
+            raise ValueError("Пароли не совпадают.")
+        return v
+
 
 class UserLogin(BaseModel):
     """
     Схема для входа пользователя в систему.
 
-    Используется в эндпоинте POST /auth/login для валидации данных входа.
-
-    Поля:
-        email (EmailStr): Email адрес пользователя.
-            Валидируется на соответствие формату email.
-            Пример: "user@example.com"
-
-        password (str): Пароль пользователя.
-            Передается в открытом виде, но защищается TLS/SSL на транспортном уровне.
-
-    Валидация:
-        - Email валидируется автоматически через EmailStr
-        - Пароль проверяется на соответствие хешу в базе данных
-
-    Примечание:
-        В эндпоинте login используется зависимость login_form, которая преобразует
-        OAuth2 форму (username, password) в эту схему (email, password).
+    Attributes:
+        email: Email пользователя с валидацией формата.
+        password: Пароль пользователя.
     """
 
     email: EmailStr
@@ -119,54 +119,32 @@ class UserResponse(BaseModel):
     """
     Схема для ответа с данными пользователя.
 
-    Используется для возврата публичных данных пользователя в различных эндпоинтах.
-    Не включает конфиденциальные данные (хеш пароля, флаги блокировки и т.д.).
+    Используется при возвращении данных пользователя в API ответах.
+    Не включает пароль и другие чувствительные данные.
 
-    Поля:
-        email (EmailStr): Email адрес пользователя.
-            Пример: "user@example.com"
+    Attributes:
+        email: Email пользователя.
+        first_name: Имя пользователя.
+        last_name: Фамилия пользователя.
+        gender: Пол пользователя.
 
-        first_name (str): Имя пользователя.
-            Обязательное поле.
-
-        last_name (str): Фамилия пользователя.
-            Обязательное поле.
-
-        gender (Gender): Пол пользователя.
-            Обязательное поле.
-
-    Конфигурация:
-        from_attributes = True: Позволяет создавать экземпляры схемы
-            напрямую из SQLAlchemy моделей (ORM mode).
-
-    Использование:
-        - Ответ эндпоинта GET /users/me/my_info
-        - Ответ эндпоинтов обновления профиля и смены пароля
+    Config:
+        from_attributes: Разрешает создание экземпляра из ORM объектов.
     """
-
     email: EmailStr
     first_name: str
     last_name: str
     gender: str
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ResendConfirmationRequest(BaseModel):
     """
-    Схема для запроса повторной отправки подтверждения email.
+    Схема для запроса повторной отправки email подтверждения.
 
-    Используется в эндпоинте POST /auth/resend-confirmation.
-
-    Поля:
-        email (EmailStr): Email адрес, на который нужно отправить подтверждение.
-            Валидируется на соответствие формату email.
-            Пример: "user@example.com"
-
-    Примечание:
-        Письмо отправляется только если пользователь существует,
-        не активирован и не заблокирован.
+    Attributes:
+        email: Email пользователя, которому нужно отправить подтверждение.
     """
 
     email: EmailStr
@@ -176,16 +154,8 @@ class PasswordResetRequest(BaseModel):
     """
     Схема для запроса сброса пароля.
 
-    Используется в эндпоинте POST /auth/password-reset-request.
-
-    Поля:
-        email (EmailStr): Email адрес пользователя, который запросил сброс пароля.
-            Валидируется на соответствие формату email.
-            Пример: "user@example.com"
-
-    Примечание:
-        Письмо со ссылкой для сброса пароля отправляется на указанный email,
-        если пользователь существует, активен и не заблокирован.
+    Attributes:
+        email: Email пользователя, который запросил сброс пароля.
     """
 
     email: EmailStr
@@ -195,108 +165,112 @@ class PasswordResetConfirm(BaseModel):
     """
     Схема для подтверждения сброса пароля.
 
-    Используется в эндпоинте POST /auth/password-reset-confirm.
-    Включает токен из письма и новый пароль с подтверждением.
+    Используется для установки нового пароля после получения токена сброса.
 
-    Поля:
-        token (str): JWT токен из письма для сброса пароля.
-            Должен быть валидным и не просроченным.
-            Тип токена: "reset".
+    Attributes:
+        token: Токен сброса пароля, отправленный на email пользователя.
+        new_password: Новый пароль длиной не менее 6 символов.
+        new_password_confirm: Подтверждение нового пароля.
 
-        new_password (str): Новый пароль пользователя.
-            Минимальная длина: 6 символов.
+    Raises:
+        ValueError: Если new_password и new_password_confirm не совпадают.
 
-        new_password_confirm (str): Подтверждение нового пароля.
-            Минимальная длина: 6 символов.
-            Должно совпадать с new_password.
-
-    Валидация:
-        - Совпадение паролей проверяется валидатором passwords_match
-        - Токен проверяется на валидность и тип в бизнес-логике
-
-    Валидатор:
-        passwords_match: Проверяет, что new_password и new_password_confirm совпадают.
-            Выбрасывает ValueError с сообщением "Пароли не совпадают." в случае несовпадения.
-
+    Example:
+        ```json
+        {
+            "token": "abc123token456",
+            "new_password": "newsecurepass456",
+            "new_password_confirm": "newsecurepass456"
+        }
+        ```
     Примечание:
-        Токен обычно имеет срок жизни 30 минут для безопасности.
+        Добавить проверку несовпадения со старым паролем?
     """
 
     token: str
     new_password: str = Field(min_length=6)
     new_password_confirm: str = Field(min_length=6)
 
-    @validator("new_password_confirm")
-    def passwords_match(cls, v, values):
-        if "new_password" in values and v != values["new_password"]:
+    @field_validator("new_password_confirm")
+    @classmethod
+    def passwords_match(cls, v: str, info: ValidationInfo) -> str:
+        """
+        Проверяет совпадение нового пароля и его подтверждения.
+
+        Args:
+            v: Значение поля new_password_confirm.
+            info: Контекст валидации с уже провалидированными данными.
+
+        Returns:
+            str: Значение new_password_confirm, если проверка пройдена.
+
+        Raises:
+            ValueError: Если пароли не совпадают.
+        """
+
+        if "new_password" in info.data and v != info.data["new_password"]:
             raise ValueError("Пароли не совпадают.")
         return v
 
 
 class UserInfoUpdate(BaseModel):
     """
-    Схема для обновления профиля пользователя.
+    Схема для обновления информации о пользователе.
 
-    Используется в эндпоинте PATCH /users/me/change_info.
-    Все поля опциональны - поддерживается частичное обновление.
+    Используется для частичного обновления профиля пользователя.
 
-    Поля:
-        first_name (str): Имя пользователя.
-            Обязательное поле.
+    Attributes:
+        first_name: Новое имя пользователя.
+        last_name: Новая фамилия пользователя.
+        gender: Новый пол пользователя.
 
-        last_name (str): Фамилия пользователя.
-            Обязательное поле.
-
-        gender (Gender): Пол пользователя.
-            Обязательное поле.
-
-    Примечание:
-        Если клиент отправляет пустой запрос (все поля None), возвращается ошибка 400.
+    Config:
+        from_attributes: Разрешает создание экземпляра из ORM объектов.
     """
 
     first_name: str
     last_name: str
     gender: str
 
+    model_config = ConfigDict(from_attributes=True)
+
 
 class PasswordChange(BaseModel):
     """
-    Схема для смены пароля пользователем.
+    Схема для смены пароля пользователя.
 
-    Используется в эндпоинте PATCH /users/me/change_password.
-    Требует текущий пароль для проверки и новый пароль с подтверждением.
+    Требует указания текущего пароля для дополнительной безопасности.
 
-    Поля:
-        current_password (str): Текущий пароль пользователя.
-            Используется для проверки, что запрос делает владелец аккаунта.
+    Attributes:
+        current_password: Текущий пароль пользователя.
+        new_password: Новый пароль длиной не менее 6 символов.
+        new_password_confirm: Подтверждение нового пароля.
 
-        new_password (str): Новый пароль пользователя.
-            Минимальная длина: 6 символов.
-            Не может совпадать с текущим паролем (проверка в бизнес-логике).
-
-        new_password_confirm (str): Подтверждение нового пароля.
-            Минимальная длина: 6 символов.
-            Должно совпадать с new_password.
-
-    Валидация:
-        - Совпадение новых паролей проверяется валидатором passwords_match
-        - Текущий пароль проверяется на соответствие хешу в базе данных
-
-    Валидатор:
-        passwords_match: Проверяет, что new_password и new_password_confirm совпадают.
-            Выбрасывает ValueError с сообщением "Новые пароли не совпадают" в случае несовпадения.
-
-    Примечание:
-        После успешной смены пароля все существующие JWT токены остаются валидными
-        до истечения срока их действия. Рекомендуется выйти из системы на всех устройствах.
+    Raises:
+        ValueError: Если new_password и new_password_confirm не совпадают.
     """
 
     current_password: str
     new_password: str = Field(..., min_length=6)
     new_password_confirm: str = Field(..., min_length=6)
 
-    @validator("new_password_confirm")
-    def passwords_match(cls, v, values):
-        if "new_password" in values and v != values["new_password"]:
+    @field_validator("new_password_confirm")
+    @classmethod
+    def passwords_match(cls, v: str, info: ValidationInfo) -> str:
+        """
+        Проверяет совпадение нового пароля и его подтверждения.
+
+        Args:
+            v: Значение поля new_password_confirm.
+            info: Контекст валидации с уже провалидированными данными.
+
+        Returns:
+            str: Значение new_password_confirm, если проверка пройдена.
+
+        Raises:
+            ValueError: Если пароли не совпадают.
+        """
+
+        if "new_password" in info.data and v != info.data["new_password"]:
             raise ValueError("Новые пароли не совпадают")
         return v
