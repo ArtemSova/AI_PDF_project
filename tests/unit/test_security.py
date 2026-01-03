@@ -16,10 +16,6 @@
     app.core.config: Настройки приложения, включая секретные ключи
 """
 
-from datetime import datetime, timedelta, timezone
-from jose import jwt
-
-from app.core.config import settings
 from app.core.security import *
 
 
