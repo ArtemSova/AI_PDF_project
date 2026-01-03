@@ -105,7 +105,7 @@ async def test_full_auth_flow(client: AsyncClient, db_session: AsyncSession):
 
 
 @pytest.mark.asyncio
-async def test_login_invalid_credentials(client: AsyncClient): # <-- Убран параметр db
+async def test_login_invalid_credentials(client: AsyncClient):
     """
     Тестирует обработку неверных учетных данных при входе в систему.
 
